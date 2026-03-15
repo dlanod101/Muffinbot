@@ -219,6 +219,11 @@ async def index():
         "ai_enabled": groq_client is not None
     }
 
+@app.get("/health")
+async def health_check():
+    """Dedicated health check endpoint."""
+    return {"status": "ok"}
+
 # Webhook endpoint kept for legacy/compatibility but not used in Polling mode
 @app.post("/webhook")
 async def webhook(request: Request):
