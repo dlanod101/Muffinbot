@@ -68,9 +68,10 @@ def save_history(history):
 def format_potato_task(name, description, points, deadline):
     """Formats a task into a PotatoTask string."""
     prompt = (
-        f"Write this task description properly and make descriptive and it sould like a game side quest "
-        f"not more than 4 sentences. the task is {name} {description} {points} {deadline} "
-        f"do not use * * or ** ** formatting in responses. Just give the description, no title anymore."
+        f"Rewrite this task as a heroic game side quest description. "
+        f"Keep it between 2 to 4 sentences. "
+        f"Task details: name='{name}', description='{description}', points='{points}', deadline='{deadline}'. "
+        f"Do not use any markdown formatting like * or **. Just the text description."
     )
     formatted_description = prompt_groq(prompt)
     return (
@@ -151,15 +152,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = str(update.effective_user.id)
-    user_text = update.message.text
-    
+    # Auto-detect task creation: "Name | Description | Points | Deadline"
+    if "|" in user_text:
+        parts = [p.strip() for p in user_text.split('|')]
+        if len(parts) >= 2:
+            name = parts[0]
+            desc = parts[1] if len(parts) > 1 else ""
+            pts = parts[2] if len(parts) > 2 else "0"
+            dl = parts[3] if len(parts) > 3 else "TBD"
+            
+            # Logic to handle if user only provides 2 or 3 parts
+            task_response = format_potato_task(name, desc, pts, dl)
+            await update.message.reply_text(task_response)
+            return
+
     history_data = load_history()
     bot_info = load_bot_info()
     
     if user_id not in history_data:
         history_data[user_id] = []
         
-    system_prompt = f"Knowledge base: {bot_info}\nYou can also format tasks as PotatoTasks if requested."
+    system_prompt = (
+        f"Knowledge base: {bot_info}\n"
+        "You are 'Muffin', a helpful assistant. If a user wants to create a 'PotatoTask', "
+        "they usually use the format: 'Name | Description | Points | Deadline'. "
+        "If they ask you to format something as a PotatoTask, use that structure OR "
+        "call the format_potato_task logic style."
+    )
     response_text = prompt_groq(user_text, system_prompt=system_prompt, history=history_data[user_id])
     
     history_data[user_id].append({"role": "user", "content": user_text})
