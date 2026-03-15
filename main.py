@@ -23,8 +23,18 @@ logger = logging.getLogger(__name__)
 HISTORY_FILE = "history.json"
 BOT_INFO_FILE = "bot_info.txt"
 
-# Initialize Groq client
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# Initialize Groq client safely
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+groq_client = None
+
+if GROQ_API_KEY:
+    try:
+        groq_client = Groq(api_key=GROQ_API_KEY)
+        logger.info("Groq client initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Groq client: {e}")
+else:
+    logger.warning("GROQ_API_KEY not found. AI features will be unavailable.")
 
 # Global application instance for persistence between requests
 application = None
@@ -48,7 +58,7 @@ def load_history():
 
 def save_history(history):
     """Saves conversation history to the JSON file."""
-    # Note: On Vercel, this is ephemeral!
+    # Note: On Vercel/Render, this might be ephemeral depending on the plan!
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=4)
@@ -74,6 +84,10 @@ def format_potato_task(name, description, points, deadline):
 
 def prompt_groq(prompt, system_prompt=None, history=None):
     """Stand-alone function to get a response from Groq."""
+    if not groq_client:
+        logger.error("Groq client not initialized. Cannot process request.")
+        return "I'm sorry, my AI features are currently disabled because the API key is missing."
+
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -99,7 +113,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = load_history()
     history[user_id] = [] # Reset history on start
     save_history(history)
-    await update.message.reply_text("Hello! I'm your enhanced Telegram bot on Vercel. Type /help to see more.")
+    await update.message.reply_text("Hello! I'm your Telegram bot. I'm now running in Polling mode for better reliability.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /help command."""
@@ -160,7 +174,7 @@ async def lifespan(app: FastAPI):
     global application
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not bot_token:
-        logger.error("TELEGRAM_BOT_TOKEN not found.")
+        logger.error("TELEGRAM_BOT_TOKEN not found. Bot will not start.")
         yield
         return
 
@@ -176,26 +190,39 @@ async def lifespan(app: FastAPI):
         await application.initialize()
         await application.start()
         
-        # Only Start Polling if we are NOT on Vercel or if explicitly requested
-        if os.getenv("USE_POLLING", "False").lower() == "true":
+        # Default to Polling on Render/local
+        use_polling = os.getenv("USE_POLLING", "True").lower() == "true"
+        
+        if use_polling:
             logger.info("Starting bot in POLLING mode...")
-            # We run it in the background so FastAPI can still start
+            # Run polling in the background
             asyncio.create_task(application.updater.start_polling())
         else:
-            logger.info("Bot application initialized. Webhook mode active.")
+            logger.info("Bot application initialized in Webhook mode (Warning: Not primary).")
             
         yield
         
-        if os.getenv("USE_POLLING", "False").lower() == "true":
+        if use_polling and application.updater.running:
             await application.updater.stop()
         await application.stop()
         await application.shutdown()
 
 app = FastAPI(lifespan=lifespan)
 
+@app.get("/")
+async def index():
+    """Health check endpoint for Render."""
+    mode = "Polling" if os.getenv("USE_POLLING", "True").lower() == "true" else "Webhook"
+    return {
+        "status": "Bot is running", 
+        "mode": mode,
+        "ai_enabled": groq_client is not None
+    }
+
+# Webhook endpoint kept for legacy/compatibility but not used in Polling mode
 @app.post("/webhook")
 async def webhook(request: Request):
-    """Handle incoming Telegram updates via webhook."""
+    """Handle incoming Telegram updates via webhook (if enabled)."""
     global application
     if application is None:
         return Response(status_code=500, content="Application not initialized")
@@ -209,15 +236,9 @@ async def webhook(request: Request):
         logger.error(f"Error processing update: {e}")
         return Response(status_code=500, content=str(e))
 
-@app.get("/")
-async def index():
-    mode = "Polling" if os.getenv("USE_POLLING", "False").lower() == "true" else "Webhook"
-    return {"status": "Bot is running", "mode": mode}
-
 if __name__ == '__main__':
-    # For local testing, default to Polling if not specified
-    if os.getenv("USE_POLLING") is None:
-        os.environ["USE_POLLING"] = "True"
-        
+    # Local development settings
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
